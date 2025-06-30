@@ -11,7 +11,7 @@ use std::{
 use clap::Parser;
 /// Program to forward serial port over TCP
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(version, about, long_about)]
 struct Args {
     #[arg(short, long, required = true)]
     /// Serial port to forward
@@ -176,7 +176,7 @@ fn serial_reader(
             }
             Err(e) => {
                 log::error!("[COM] Error reading from serial port: {}", e);
-                std::thread::sleep(Duration::from_secs(1)); // Wait before retrying
+                std::thread::sleep(Duration::from_millis(1)); // Wait before retrying
             }
         }
     }
@@ -268,8 +268,8 @@ async fn handle_client(
                     buf.extend_from_slice(&tbuf[..n]);
                     log::info!("[NET] Read {} bytes from TCP", n);
                 }
-                Err(e) => {
-                    log::error!("[NET] Error reading from TCP socket: {}", e);
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_millis(1)).await; // Avoid busy waiting
                     break;
                 }
             }
