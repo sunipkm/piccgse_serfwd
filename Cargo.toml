@@ -1,0 +1,13 @@
+[package]
+name = "piccgse_serfwd"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.40", features = ["time", "rt", "macros", "rt-multi-thread", "signal", "sync", "net"], default-features = false }
+futures-util = "0.3"
+futures-channel = "0.3"
+serialport = { version = "4.7", default-features = false }
+log = "0.4"
+clap = { version = "4.5", features = ["derive"] }
+env_logger = "0.11"

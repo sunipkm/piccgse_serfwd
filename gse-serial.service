@@ -1,0 +1,21 @@
+# location : /usr/lib/systemd/user/thermo.service
+# systemctl daemon-reload
+# systemctl enable thermo.service
+# systemctl start thermo.service
+# systemctl list-units --type=service --state=running
+
+[Unit]
+Description=Thermo service
+After=multi-user.target
+StartLimitIntervalSec=1
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/home/picture/thermo-server/thermo.env
+ExecStart=/home/picture/thermo-server/thermo-server $THM_PATHS $HUM_PATHS $SER_PATH $EXCLUDED $LED
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=default.target
