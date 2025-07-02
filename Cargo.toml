@@ -4,7 +4,7 @@ version = "0.0.1"
 edition = "2024"
 
 [dependencies]
-tokio = { version = "1.40", features = ["time", "rt", "macros", "rt-multi-thread", "signal", "sync", "net"], default-features = false }
+tokio = { version = "1.40", features = ["time", "rt", "macros", "rt-multi-thread", "signal", "sync", "net", "io-util"], default-features = false }
 futures-util = "0.3"
 futures-channel = "0.3"
 serialport = { version = "4.7", default-features = false }
