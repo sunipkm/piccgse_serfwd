@@ -26,14 +26,22 @@ struct Args {
     )]
     /// Baud rate for the serial port
     baud: u32,
-    /// Network port to listen on
+    #[arg(
+        short,
+        long,
+        default_value = "10001",
+        value_parser = clap::value_parser!(u16).range(1..=65535)
+    )]
+    /// Network port to listen on to send commands
+    writeport: u16,
     #[arg(
         short,
         long,
         default_value = "10002",
         value_parser = clap::value_parser!(u16).range(1..=65535)
     )]
-    port: u16,
+    /// Network port to listen on to receive data
+    readport: u16,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -53,15 +61,24 @@ async fn main() {
     // Data source and sink for serial data
     let (ser_to_net, _) = tokio::sync::broadcast::channel(100);
     let (net_to_ser, ser_from_net) = tokio::sync::mpsc::channel(100);
-    // Start the TCP server
-    let server_task = {
+    // Start the TCP reader server
+    let netsink_task = {
         let running = running.clone();
         let ser_to_net = ser_to_net.clone();
-        let net_to_ser = net_to_ser.clone();
-        let port = args.port;
-        log::info!("[NET] Starting TCP server on port {}", port);
+        let readport = args.readport;
+        log::info!("[NET] Starting TCP server on port {}", readport);
         tokio::spawn(async move {
-            tcp_server(port, running, ser_to_net, net_to_ser).await;
+            tcp_server(readport, running, Some(ser_to_net), None).await;
+        })
+    };
+    // Start the TCP writer server
+    let netsrc_task = {
+        let running = running.clone();
+        let net_to_ser = net_to_ser.clone();
+        let writeport = args.writeport;
+        log::info!("[NET] Starting TCP server on port {}", writeport);
+        tokio::spawn(async move {
+            tcp_server(writeport, running, None, Some(net_to_ser)).await;
         })
     };
     // Start the serial thread
@@ -87,12 +104,18 @@ async fn main() {
     }
     // Abort the listener
     log::info!("[COM] Stopping tasks...");
-    server_task.abort();
-    let (net_res, ser_res) = tokio::join!(server_task, serial_task);
-    if let Err(e) = net_res {
-        log::error!("[COM] TCP server task failed: {}", e);
+    netsink_task.abort();
+    netsrc_task.abort();
+    let (netsink_res, netsrc_res, ser_res) = tokio::join!(netsink_task, netsrc_task, serial_task);
+    if let Err(e) = netsink_res {
+        log::error!("[COM] TCP reader task failed: {}", e);
     } else {
-        log::info!("[COM] TCP server task completed successfully");
+        log::info!("[COM] TCP reader task completed successfully");
+    }
+    if let Err(e) = netsrc_res {
+        log::error!("[COM] TCP writer task failed: {}", e);
+    } else {
+        log::info!("[COM] TCP writer task completed successfully");
     }
     if let Err(e) = ser_res {
         log::error!("[COM] Serial thread task failed: {}", e);
@@ -129,16 +152,6 @@ pub fn serial_thread(
                 continue 'root;
             }
         };
-        // let sig = Arc::new(AtomicBool::new(true));
-        // let reader = ser
-        //     .try_clone_native()
-        //     .expect("Failed to clone serial port for reading");
-        // let reader_hdl = {
-        //     let sig = sig.clone();
-        //     let sink = data_sink.clone();
-        //     std::thread::spawn(move || serial_reader(reader, sig, sink))
-        // };
-        // log::info!("[SER] Serial reader thread spawned");
         let mut buf = Vec::with_capacity(1024);
         while running.load(Ordering::Relaxed) {
             // send things from serial to network
@@ -151,10 +164,13 @@ pub fn serial_thread(
                     }
                 },
                 |data| {
-                    let cmd = String::from_utf8_lossy(&data);
-                    log::info!("[SER] Received command from network for PICTURE: {}", cmd);
-                    let mut data = data;
-                    data.push(10); // Append newline character
+                    let cmd = String::from_utf8_lossy(&data).into_owned();
+                    log::info!(
+                        "[SER] Received command from network for PICTURE: {}",
+                        cmd.trim()
+                    );
+                    // let mut data = data;
+                    // data.push(10); // Append newline character
                     if let Err(e) = ser.write_all(&data) {
                         log::error!("[SER] Failed to write data to serial port: {}", e);
                     } else {
@@ -168,6 +184,19 @@ pub fn serial_thread(
             // read things from serial and send to network
             let mut tmp = [0; 512];
             match ser.read(&mut tmp[..]) {
+                Ok(0) => {
+                    if !buf.is_empty() {
+                        log::info!(
+                            "[SER] Sending {} bytes to network: {}",
+                            buf.len(),
+                            String::from_utf8_lossy(&buf)
+                        );
+                        if let Err(e) = data_sink.send(buf.clone()) {
+                            log::error!("[SER] Failed to send data: {}", e);
+                        }
+                        buf.clear();
+                    }
+                }
                 Ok(n) => {
                     log::info!(
                         "[SER] Read {} bytes from serial port: {}",
@@ -194,26 +223,27 @@ pub fn serial_thread(
             }
         }
         log::info!("[SER] Stopping serial reader thread");
-        // sig.store(false, Ordering::Relaxed);
-        // if let Err(e) = reader_hdl.join() {
-        //     log::error!("[SER] Failed to join serial reader thread: {:?}", e);
-        // } else {
-        //     log::info!("[SER] Serial reader thread joined successfully");
-        // }
     }
 }
 
 async fn tcp_server(
     port: u16,
     running: Arc<AtomicBool>,
-    ser_to_net: tokio::sync::broadcast::Sender<Vec<u8>>,
-    net_to_ser: tokio::sync::mpsc::Sender<Vec<u8>>,
+    ser_to_net: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
+    net_to_ser: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
 ) {
-    log::info!("[NET] Starting TCP server on port {}", port);
+    let mode = match (ser_to_net.is_some(), net_to_ser.is_some()) {
+        (true, true) => "both",
+        (true, false) => "write",
+        (false, true) => "read",
+        (false, false) => "none",
+    };
+
+    log::info!("[NET] Starting TCP {mode} server on port {port}");
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .expect("[NET] Failed to bind TCP listener");
-    log::info!("[NET] TCP server listening on port {}", port);
+    log::info!("[NET] TCP {mode} server listening on port {}", port);
     while running.load(Ordering::Relaxed) {
         match listener.accept().await {
             Ok((socket, addr)) => {
@@ -226,28 +256,28 @@ async fn tcp_server(
                 });
             }
             Err(e) => {
-                log::error!("[NET] Failed to accept connection: {}", e);
+                log::error!("[NET] Failed to accept connection on {mode} server: {e}");
             }
         }
     }
-    log::info!("[NET] TCP server stopped");
+    log::info!("[NET] TCP {mode} server stopped");
 }
 
 async fn handle_client(
     socket: tokio::net::TcpStream,
     addr: std::net::SocketAddr,
     running: Arc<AtomicBool>,
-    ser_to_net: tokio::sync::broadcast::Sender<Vec<u8>>,
-    net_to_ser: tokio::sync::mpsc::Sender<Vec<u8>>,
+    ser_to_net: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
+    net_to_ser: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
 ) {
-    log::info!("[NET] Handling new client {addr}");
-    let mut ser_to_net = ser_to_net.subscribe();
+    log::info!("[NET] Client: Connected to {addr}");
+    let ser_to_net = ser_to_net.map(|s| s.subscribe());
 
     let (mut reader, mut writer) = socket.into_split();
     // Task to read from serial and send to TCP
-    let ser_to_net_task = {
+    let ser_to_net_task = if let Some(mut ser_to_net) = ser_to_net {
         let running = running.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             while running.load(Ordering::Relaxed) {
                 match ser_to_net.recv().await {
                     Ok(data) => {
@@ -269,12 +299,14 @@ async fn handle_client(
                         }
                     }
                     Err(e) => {
-                        log::error!("[NET] Error receiving data from serial: {e}");
+                        log::error!("[NET] {addr}: Error receiving data from serial: {e}");
                         break;
                     }
                 }
             }
-        })
+        }))
+    } else {
+        None
     };
 
     // Main loop to read from TCP
@@ -289,10 +321,12 @@ async fn handle_client(
                     break 'root;
                 }
                 Ok(n) => {
-                    log::info!("[NET] Read {n} bytes from {addr}");
-                    if let Err(e) = net_to_ser.send(Vec::from(&buf[..n])).await {
-                        log::error!("[NET] Failed to send data to serial: {}", e);
-                        break;
+                    if let Some(net_to_ser) = net_to_ser.as_ref() {
+                        log::info!("[NET] Read {n} bytes from {addr}");
+                        if let Err(e) = net_to_ser.send(Vec::from(&buf[..n])).await {
+                            log::error!("[NET] {addr}: Failed to send data to serial: {}", e);
+                            break;
+                        }
                     }
                 }
                 Err(_) => {
@@ -304,6 +338,8 @@ async fn handle_client(
     }
 
     // Cleanup tasks
-    ser_to_net_task.abort();
+    if let Some(ser_to_net_task) = ser_to_net_task {
+        ser_to_net_task.abort();
+    }
     log::info!("[NET] Client connection closed");
 }
