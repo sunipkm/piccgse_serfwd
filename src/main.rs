@@ -51,11 +51,11 @@ async fn main() {
     // Parse command line arguments
     let args = Args::parse();
     log::info!("Arguments: {args:#?}");
-    let serial = PathBuf::from(&args.serialport);
-    if !serial.exists() {
-        log::error!("[COM] Fatal error: {} does not exist.", &args.serialport);
-        return;
-    }
+    // let serial = PathBuf::from(&args.serialport);
+    // if !serial.exists() {
+    //     log::error!("[COM] Fatal error: {} does not exist.", &args.serialport);
+    //     return;
+    // }
     // Synchronizer
     let running = Arc::new(AtomicBool::new(true));
     // Data source and sink for serial data
@@ -147,7 +147,7 @@ pub fn serial_thread(
                 ser
             }
             Err(e) => {
-                log::error!("[SER] Failed to open serial port: {e}");
+                log::error!("[SER] Failed to open serial port {path}: {e}");
                 std::thread::sleep(Duration::from_secs(1));
                 continue 'root;
             }
