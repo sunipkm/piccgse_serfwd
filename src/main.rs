@@ -66,7 +66,7 @@ async fn main() {
         let running = running.clone();
         let ser_to_net = ser_to_net.clone();
         let readport = args.readport;
-        log::info!("[NET] Starting TCP server on port {}", readport);
+        log::info!("[NET] Starting TCP server on port {readport}");
         tokio::spawn(async move {
             tcp_server(readport, running, Some(ser_to_net), None).await;
         })
@@ -76,7 +76,7 @@ async fn main() {
         let running = running.clone();
         let net_to_ser = net_to_ser.clone();
         let writeport = args.writeport;
-        log::info!("[NET] Starting TCP server on port {}", writeport);
+        log::info!("[NET] Starting TCP server on port {writeport}");
         tokio::spawn(async move {
             tcp_server(writeport, running, None, Some(net_to_ser)).await;
         })
@@ -108,17 +108,17 @@ async fn main() {
     netsrc_task.abort();
     let (netsink_res, netsrc_res, ser_res) = tokio::join!(netsink_task, netsrc_task, serial_task);
     if let Err(e) = netsink_res {
-        log::error!("[COM] TCP reader task failed: {}", e);
+        log::error!("[COM] TCP reader task failed: {e}");
     } else {
         log::info!("[COM] TCP reader task completed successfully");
     }
     if let Err(e) = netsrc_res {
-        log::error!("[COM] TCP writer task failed: {}", e);
+        log::error!("[COM] TCP writer task failed: {e}");
     } else {
         log::info!("[COM] TCP writer task completed successfully");
     }
     if let Err(e) = ser_res {
-        log::error!("[COM] Serial thread task failed: {}", e);
+        log::error!("[COM] Serial thread task failed: {e}");
     } else {
         log::info!("[COM] Serial thread task completed successfully");
     }
@@ -129,7 +129,7 @@ pub fn serial_thread(
     path: String,
     baud: u32,
     running: Arc<AtomicBool>,
-    data_sink: tokio::sync::broadcast::Sender<Vec<u8>>,
+    data_sink: tokio::sync::broadcast::Sender<Arc<Vec<u8>>>,
     data_source: tokio::sync::mpsc::Receiver<Vec<u8>>,
 ) {
     log::info!("[SER] Serial thread started.");
@@ -143,11 +143,11 @@ pub fn serial_thread(
             .timeout(Duration::from_millis(10));
         let mut ser = match serialport::TTYPort::open(&ser) {
             Ok(ser) => {
-                log::info!("[SER] Serial port opened: {}", path);
+                log::info!("[SER] Serial port opened: {path}");
                 ser
             }
             Err(e) => {
-                log::error!("[SER] Failed to open serial port: {}", e);
+                log::error!("[SER] Failed to open serial port: {e}");
                 std::thread::sleep(Duration::from_secs(1));
                 continue 'root;
             }
@@ -160,7 +160,7 @@ pub fn serial_thread(
                     if e == tokio::sync::mpsc::error::TryRecvError::Empty {
                         // No data to read, see if there is anything to receive
                     } else {
-                        log::error!("[SER] Error receiving data: {}", e);
+                        log::error!("[SER] Error receiving data: {e}");
                     }
                 },
                 |data| {
@@ -172,7 +172,7 @@ pub fn serial_thread(
                     // let mut data = data;
                     // data.push(10); // Append newline character
                     if let Err(e) = ser.write_all(&data) {
-                        log::error!("[SER] Failed to write data to serial port: {}", e);
+                        log::error!("[SER] Failed to write data to serial port: {e}");
                     } else {
                         log::info!(
                             "[SER] Successfully sent {} bytes to serial port",
@@ -191,8 +191,8 @@ pub fn serial_thread(
                             buf.len(),
                             String::from_utf8_lossy(&buf)
                         );
-                        if let Err(e) = data_sink.send(buf.clone()) {
-                            log::error!("[SER] Failed to send data: {}", e);
+                        if let Err(e) = data_sink.send(Arc::new(buf.clone())) {
+                            log::error!("[SER] Failed to send data: {e}");
                         }
                         buf.clear();
                     }
@@ -207,15 +207,15 @@ pub fn serial_thread(
                 }
                 Err(e) => {
                     if e.kind() != std::io::ErrorKind::TimedOut {
-                        log::error!("[SER] Error reading from serial port: {}", e);
+                        log::error!("[SER] Error reading from serial port: {e}");
                     } else if !buf.is_empty() {
                         log::info!(
                             "[SER] Sending {} bytes to network: {}",
                             buf.len(),
                             String::from_utf8_lossy(&buf)
                         );
-                        if let Err(e) = data_sink.send(buf.clone()) {
-                            log::error!("[SER] Failed to send data: {}", e);
+                        if let Err(e) = data_sink.send(Arc::new(buf.clone())) {
+                            log::error!("[SER] Failed to send data: {e}");
                         }
                         buf.clear();
                     }
@@ -229,7 +229,7 @@ pub fn serial_thread(
 async fn tcp_server(
     port: u16,
     running: Arc<AtomicBool>,
-    ser_to_net: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
+    ser_to_net: Option<tokio::sync::broadcast::Sender<Arc<Vec<u8>>>>,
     net_to_ser: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
 ) {
     let mode = match (ser_to_net.is_some(), net_to_ser.is_some()) {
@@ -243,11 +243,11 @@ async fn tcp_server(
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .expect("[NET] Failed to bind TCP listener");
-    log::info!("[NET] TCP {mode} server listening on port {}", port);
+    log::info!("[NET] TCP {mode} server listening on port {port}");
     while running.load(Ordering::Relaxed) {
         match listener.accept().await {
             Ok((socket, addr)) => {
-                log::info!("[NET] Accepted connection from {}", addr);
+                log::info!("[NET] Accepted connection from {addr}");
                 let ser_to_net = ser_to_net.clone();
                 let net_to_ser = net_to_ser.clone();
                 let running = running.clone();
@@ -267,7 +267,7 @@ async fn handle_client(
     socket: tokio::net::TcpStream,
     addr: std::net::SocketAddr,
     running: Arc<AtomicBool>,
-    ser_to_net: Option<tokio::sync::broadcast::Sender<Vec<u8>>>,
+    ser_to_net: Option<tokio::sync::broadcast::Sender<Arc<Vec<u8>>>>,
     net_to_ser: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
 ) {
     log::info!("[NET] Client: Connected to {addr}");
@@ -324,7 +324,7 @@ async fn handle_client(
                     if let Some(net_to_ser) = net_to_ser.as_ref() {
                         log::info!("[NET] Read {n} bytes from {addr}");
                         if let Err(e) = net_to_ser.send(Vec::from(&buf[..n])).await {
-                            log::error!("[NET] {addr}: Failed to send data to serial: {}", e);
+                            log::error!("[NET] {addr}: Failed to send data to serial: {e}");
                             break;
                         }
                     }
