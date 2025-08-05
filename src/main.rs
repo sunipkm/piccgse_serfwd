@@ -1,6 +1,5 @@
 use std::{
     io::{Read, Write},
-    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
